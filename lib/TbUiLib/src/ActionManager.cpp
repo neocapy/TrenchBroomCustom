@@ -1887,6 +1887,14 @@ void ActionManager::createDebugMenu()
     [](const auto& context) { return context.hasDocument(); },
   }));
   debugMenu.addItem(addAction(Action{
+    "Menu/Debug/Print Node Tree",
+    QObject::tr("Print Node Tree to Console"),
+    ActionContext::Any,
+    QKeySequence{},
+    [](auto& context) { context.mapWindow().debugPrintNodeTree(); },
+    [](const auto& context) { return context.hasDocument(); },
+  }));
+  debugMenu.addItem(addAction(Action{
     "Menu/Debug/Create Brush...",
     QObject::tr("Create Brush..."),
     ActionContext::Any,

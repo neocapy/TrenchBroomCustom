@@ -32,6 +32,7 @@
 #include "vm/util.h"
 
 #include <algorithm>
+#include <cstdint>
 #include <memory>
 #include <string>
 #include <vector>
@@ -49,6 +50,14 @@ class PickResult;
 class Validator;
 class Object;
 
+/**
+ * Returns the next process-global node id. Ids are monotonically increasing,
+ * unique within a process, never reused, and not serialized. Every constructed
+ * Node receives a fresh id (including clones), which is what makes node ids
+ * usable as durable handles.
+ */
+std::uint64_t nextNodeId();
+
 struct NodePath
 {
   std::vector<std::size_t> indices;
@@ -59,6 +68,7 @@ struct NodePath
 class Node : public Taggable
 {
 private:
+  std::uint64_t m_id = nextNodeId();
   Node* m_parent = nullptr;
   std::vector<Node*> m_children;
   size_t m_descendantCount = 0;
@@ -89,6 +99,11 @@ public:
   ~Node() override;
 
 public: // getters
+  /**
+   * Returns this node's process-unique id (see nextNodeId()).
+   */
+  std::uint64_t id() const;
+
   const std::string& name() const;
 
   /**

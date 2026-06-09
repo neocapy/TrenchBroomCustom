@@ -271,6 +271,40 @@ public:
 
 } // namespace
 
+TEST_CASE("NodeTest.id")
+{
+  SECTION("each node gets a unique, non-zero id")
+  {
+    const auto node1 = TestNode{};
+    const auto node2 = TestNode{};
+
+    CHECK(node1.id() != 0u);
+    CHECK(node2.id() != 0u);
+    CHECK(node1.id() != node2.id());
+  }
+
+  SECTION("id is stable for a given node")
+  {
+    const auto node = TestNode{};
+    CHECK(node.id() == node.id());
+  }
+
+  SECTION("clones receive fresh ids")
+  {
+    const auto node = TestNode{};
+    auto* clonedNode = node.clone(vm::bbox3d{});
+    CHECK(clonedNode->id() != node.id());
+    delete clonedNode;
+  }
+
+  SECTION("nextNodeId returns strictly increasing values")
+  {
+    const auto id1 = nextNodeId();
+    const auto id2 = nextNodeId();
+    CHECK(id1 < id2);
+  }
+}
+
 TEST_CASE("NodeTest.destroyChild")
 {
   auto rootNode = std::make_unique<TestNode>();

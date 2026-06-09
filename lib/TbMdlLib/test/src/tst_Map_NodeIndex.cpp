@@ -201,4 +201,71 @@ TEST_CASE("Map_NodeIndex")
   }
 }
 
+TEST_CASE("Map_findNodeById")
+{
+  auto fixture = MapFixture{};
+  auto& map = fixture.create();
+
+  SECTION("the world node is resolvable by its id")
+  {
+    auto& worldNode = map.worldNode();
+    CHECK(map.findNodeById(worldNode.id()) == &worldNode);
+  }
+
+  SECTION("unknown ids resolve to nullptr")
+  {
+    CHECK(map.findNodeById(0u) == nullptr);
+    CHECK(map.findNodeById(123456789u) == nullptr);
+  }
+
+  SECTION("added nodes are resolvable, including nested children")
+  {
+    auto* groupNode = new GroupNode{Group{"group"}};
+    auto* entityNode = new EntityNode{Entity{{
+      {"some_key", "some_value"},
+    }}};
+    groupNode->addChild(entityNode);
+
+    const auto groupId = groupNode->id();
+    const auto entityId = entityNode->id();
+
+    addNodes(map, {{parentForNodes(map), {groupNode}}});
+
+    CHECK(map.findNodeById(groupId) == groupNode);
+    CHECK(map.findNodeById(entityId) == entityNode);
+  }
+
+  SECTION("removing a node clears its id, and undo restores it")
+  {
+    auto* entityNode = new EntityNode{Entity{{
+      {"some_key", "some_value"},
+    }}};
+    addNodes(map, {{parentForNodes(map), {entityNode}}});
+
+    const auto entityId = entityNode->id();
+    REQUIRE(map.findNodeById(entityId) == entityNode);
+
+    removeNodes(map, {entityNode});
+    CHECK(map.findNodeById(entityId) == nullptr);
+
+    map.undoCommand();
+    REQUIRE(map.findNodeById(entityId) != nullptr);
+    CHECK(map.findNodeById(entityId)->id() == entityId);
+  }
+
+  SECTION("ids survive a content change")
+  {
+    auto* entityNode = new EntityNode{Entity{{
+      {"some_key", "some_value"},
+    }}};
+    addNodes(map, {{parentForNodes(map), {entityNode}}});
+    const auto entityId = entityNode->id();
+
+    selectNodes(map, {entityNode});
+    setEntityProperty(map, "another_key", "another_value");
+
+    CHECK(map.findNodeById(entityId) == entityNode);
+  }
+}
+
 } // namespace tb::mdl

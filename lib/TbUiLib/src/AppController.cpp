@@ -43,6 +43,7 @@
 #include "mdl/MapHeader.h"
 #include "ui/AboutDialog.h"
 #include "ui/ActionManager.h"
+#include "ui/ApiServer.h"
 #include "ui/CrashDialog.h"
 #include "ui/FileDialogDefaultDir.h"
 #include "ui/GameDialog.h"
@@ -183,6 +184,9 @@ AppController::AppController(
 
   m_reloadRecentDocumentsTimer->start(1s);
   m_processResourcesTimer->start(20ms);
+
+  m_apiServer = std::make_unique<ApiServer>(*this);
+  m_apiServer->start();
 }
 
 Result<std::unique_ptr<AppController>> AppController::create()

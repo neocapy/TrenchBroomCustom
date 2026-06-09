@@ -21,9 +21,11 @@
 
 #include "kd/compact_trie_forward.h"
 
+#include <cstdint>
 #include <memory>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <vector>
 
 namespace tb::mdl
@@ -36,6 +38,7 @@ class NodeIndex
 {
 private:
   std::unique_ptr<NodeStringIndex> m_index;
+  std::unordered_map<std::uint64_t, Node*> m_idIndex;
 
 public:
   NodeIndex();
@@ -47,6 +50,8 @@ public:
   void removeNode(Node& node);
 
   void clear();
+
+  Node* findNodeById(std::uint64_t id) const;
 
   template <typename NodeType = Node>
   std::vector<NodeType*> findNodes(const std::string_view pattern) const

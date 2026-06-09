@@ -88,6 +88,8 @@ std::string NodeIndex::escapePattern(std::string_view str)
 
 void NodeIndex::addNode(Node& node)
 {
+  m_idIndex[node.id()] = &node;
+
   const auto addToIndex = [&](const std::string_view key) {
     m_index->insert(key, &node);
   };
@@ -103,6 +105,8 @@ void NodeIndex::addNode(Node& node)
 
 void NodeIndex::removeNode(Node& node)
 {
+  m_idIndex.erase(node.id());
+
   const auto removeFromIndex = [&](const std::string_view key) {
     m_index->remove(key, &node);
   };
@@ -119,6 +123,13 @@ void NodeIndex::removeNode(Node& node)
 void NodeIndex::clear()
 {
   m_index = std::make_unique<NodeStringIndex>();
+  m_idIndex.clear();
+}
+
+Node* NodeIndex::findNodeById(const std::uint64_t id) const
+{
+  const auto it = m_idIndex.find(id);
+  return it != m_idIndex.end() ? it->second : nullptr;
 }
 
 std::vector<Node*> NodeIndex::doFindNodes(const std::string_view pattern) const

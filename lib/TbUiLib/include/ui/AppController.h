@@ -60,6 +60,7 @@ namespace ui
 {
 class AboutDialog;
 class ActionManager;
+class ApiServer;
 class MapWindowManager;
 class RecentDocuments;
 class WelcomeWindow;
@@ -89,6 +90,7 @@ private:
   std::unique_ptr<ActionManager> m_actionManager;
   std::unique_ptr<WelcomeWindow> m_welcomeWindow;
   std::unique_ptr<AboutDialog> m_aboutDialog;
+  std::unique_ptr<ApiServer> m_apiServer;
 
 public:
   AppController(

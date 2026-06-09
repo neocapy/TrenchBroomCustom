@@ -1398,6 +1398,11 @@ void Map::removeFromNodeIndex(const std::vector<Node*>& nodes, const bool recurs
   }
 }
 
+Node* Map::findNodeById(const std::uint64_t id) const
+{
+  return m_nodeIndex ? m_nodeIndex->findNodeById(id) : nullptr;
+}
+
 void Map::initializeEntityLinks()
 {
   addEntityLinks({&worldNode()}, true);

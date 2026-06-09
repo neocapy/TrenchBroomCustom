@@ -30,6 +30,7 @@
 
 #include "vm/bbox.h"
 
+#include <cstdint>
 #include <filesystem>
 #include <memory>
 #include <optional>
@@ -291,6 +292,13 @@ public: // misc
     return m_nodeIndex ? m_nodeIndex->findNodes<NodeType>(pattern)
                        : std::vector<NodeType*>{};
   }
+
+  /**
+   * Returns the attached node with the given id, or nullptr if no such node is
+   * currently in the document. Ids are assigned per Node (see mdl::nextNodeId)
+   * and resolved through the same index that backs findNodes.
+   */
+  Node* findNodeById(std::uint64_t id) const;
 
   const EntityLinkManager& entityLinkManager() const;
 

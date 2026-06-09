@@ -33,6 +33,8 @@
 #include "kd/vector_utils.h"
 
 #include <algorithm>
+#include <atomic>
+#include <cstdint>
 #include <iterator>
 #include <ranges>
 #include <string>
@@ -42,6 +44,12 @@ namespace tb::mdl
 {
 
 kdl_reflect_impl(NodePath);
+
+std::uint64_t nextNodeId()
+{
+  static auto counter = std::atomic<std::uint64_t>{1};
+  return counter.fetch_add(1, std::memory_order_relaxed);
+}
 
 Node::Node() = default;
 
@@ -53,6 +61,11 @@ Node::~Node()
 const std::string& Node::name() const
 {
   return doGetName();
+}
+
+std::uint64_t Node::id() const
+{
+  return m_id;
 }
 
 NodePath Node::pathFrom(const Node& ancestor) const

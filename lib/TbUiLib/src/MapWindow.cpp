@@ -2385,6 +2385,39 @@ void MapWindow::debugPrintVertices()
   }
 }
 
+namespace
+{
+
+void printNodeTree(Logger& logger, const mdl::Node& node, const size_t depth)
+{
+  auto line = std::stringstream{};
+  line << std::string(depth * 2, ' ') << "[" << node.id() << "] ";
+  node.accept(kdl::overload(
+    [&](const mdl::WorldNode&) { line << "World"; },
+    [&](const mdl::LayerNode& layerNode) { line << "Layer \"" << layerNode.name() << "\""; },
+    [&](const mdl::GroupNode& groupNode) { line << "Group \"" << groupNode.name() << "\""; },
+    [&](const mdl::EntityNode& entityNode) { line << "Entity " << entityNode.name(); },
+    [&](const mdl::BrushNode& brushNode) {
+      line << "Brush (" << brushNode.brush().faces().size() << " faces)";
+    },
+    [&](const mdl::PatchNode&) { line << "Patch"; }));
+  logger.info() << line.str();
+
+  for (const auto* child : node.children())
+  {
+    printNodeTree(logger, *child, depth + 1);
+  }
+}
+
+} // namespace
+
+void MapWindow::debugPrintNodeTree()
+{
+  const auto& map = m_document->map();
+  logger().info() << "Node tree (" << map.worldNode().familySize() << " nodes):";
+  printNodeTree(logger(), map.worldNode(), 0);
+}
+
 void MapWindow::debugCreateBrush()
 {
   auto ok = false;

@@ -406,6 +406,7 @@ public:
   void revealMaterial(const gl::Material* material);
 
   void debugPrintVertices();
+  void debugPrintNodeTree();
   void debugCreateBrush();
   void debugCreateCube();
   void debugCrash();
