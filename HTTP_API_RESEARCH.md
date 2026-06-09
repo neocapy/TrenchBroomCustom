@@ -624,6 +624,10 @@ Built and verified: node identity (section 7), document identity, the server
 (sections 10-11), and the document and scene-graph read routes (section 13).
 Mutation and the spatial/palette reads are still design only.
 
+The work lives on branch `http-control-api` (pushed to `origin`), three commits:
+node identity + server scaffold; document handle + `GET /documents`; the document
+and scene-graph read routes.
+
 - `mdl::Node` carries a `std::uint64_t` id minted on construction from a
   process-global atomic (`mdl::nextNodeId()`; starts at 1, with 0 reserved as a
   null handle). Clones get fresh ids for free: `clone()` builds through the normal
@@ -650,12 +654,20 @@ Mutation and the spatial/palette reads are still design only.
   Every per-document route takes a required `doc` handle (query item on GET, body
   field on POST); a shared resolver returns 409 if it is missing, 400 if malformed,
   404 if it names no open document. Node serialization (summary / full) covers world,
-  layer, group, entity, brush, and patch. Smoke-tested offscreen with `curl` across
-  every error path plus `GET /documents`.
+  layer, group, entity, brush, and patch. Smoke-tested offscreen across every
+  resolver error path; the data paths verified by hand against an open map.
 
-Not started: the spatial/palette reads (`GET /materials`, `GET /entityclasses`,
-`POST /raycast`, `POST /contains`), the `/edit` batch executor (with `as` / `@ref`
-resolution and the per-op handlers), and `clipSelectedBrushes`.
+Next, in order:
+
+- `GET /materials` and `GET /entityclasses`: palette enumeration from the material
+  manager and the entity-definition manager. Expected to be straightforward.
+- `POST /contains`: maps onto `Node::findNodesContaining`.
+- `POST /raycast`: needs the picking subsystem (`PickResult` + `EditorContext`).
+  Open design fork: what counts as a hit, and whether hidden / locked geometry is
+  ignored.
+- `POST /edit` batch executor: the `as` / `@ref` resolution table, the per-op
+  handlers, and `onError` (abort vs continue). `clip` still needs a
+  `clipSelectedBrushes` path.
 
 ## Open questions and deferrals
 
@@ -667,8 +679,9 @@ faces. The v1 surface is section 13. The rest are deferrals, not blockers:
   of ops, one transaction, one undo step. Read-side fan-out (arrays of rays or
   points) stays on the individual read routes.
 - Action-invocation endpoint (any menu command by id): cut from v1.
-- Multi-document: keep the per-`Map` id index and resolve within the single open
-  document; add a process-global index only if concurrent multi-doc scripting is
-  ever wanted.
+- Multi-document: done. Each open document has its own handle (`ui::MapDocument`
+  id), `GET /documents` lists them (active first), and every route resolves a
+  required `doc` handle. Node ids stay per-`Map`, so a node handle is only
+  meaningful together with its `doc`.
 - `/csg` and `/clip` return the resulting selection; if a later script needs the
   exact added/removed handle sets, that is a small extension.
