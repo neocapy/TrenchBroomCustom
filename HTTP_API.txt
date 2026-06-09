@@ -1,0 +1,161 @@
+TrenchBroom HTTP control API (v1) — base http://127.0.0.1:28196, JSON bodies, loopback only.
+Shapes below are TypeScript. Fields marked ? are omitted when absent (never null unless typed).
+
+// ---------- Core types ----------
+
+type Vec3 = [number, number, number];          // world units
+interface Bounds { min: Vec3; max: Vec3 }
+type Handle = number;                          // uint64 id of a node or document
+type Ref = string;                             // "@name": result of an earlier op in the SAME /edit batch
+type HandleOrRef = Handle | Ref;
+interface FaceRef { brush: HandleOrRef; face: number }   // face index is positional
+type NodeType = "world" | "layer" | "group" | "entity" | "brush" | "patch";
+
+interface NodeSummary {
+  handle: Handle; type: NodeType; bounds: Bounds;
+  parent?: Handle;        // absent on world
+  layer?: Handle;         // containing layer; absent on world/layer
+  selected: boolean; visible: boolean; locked: boolean;
+  classname?: string;     // world + entity
+  material?: string;      // brush, only if all faces share one material
+}
+interface BrushFaceInfo {
+  index: number; points: [Vec3, Vec3, Vec3]; normal: Vec3;
+  material: string; offset: [number, number]; scale: [number, number]; rotation: number;
+}
+interface NodeDetail extends NodeSummary {
+  properties?: Record<string, string>;  // world + entity
+  origin?: Vec3; pointEntity?: boolean; // entity
+  faces?: BrushFaceInfo[];              // brush
+  children?: Handle[];                  // any node with children
+}
+interface RayHit {
+  point: Vec3; distance: number; handle: Handle;
+  normal?: Vec3; face?: number; material?: string;  // present iff a brush face was hit
+}
+interface ApiError { error: string }   // body of every non-2xx response
+
+// Status codes: 400 malformed request; 404 unknown doc handle; 409 doc selector
+// missing (or modal tool active, /edit only); 422 operation ran but failed.
+// Every route except GET /documents requires a document: query ?doc=<Handle> on
+// GET, body field doc: Handle on POST.
+
+// ---------- Read routes ----------
+
+// GET /documents -> Document[]            (active document first)
+interface Document {
+  handle: Handle; active: boolean; name: string;
+  path: string | null;                     // null if never saved
+  mapFormat: string; worldBounds: Bounds; modified: boolean;
+  layers: { handle: Handle; name: string }[];
+  nodeCount: number;
+}
+
+// GET /nodes?doc=N[&type=NodeType] -> { nodes: { handle: Handle; type: NodeType }[] }   // whole tree
+
+// POST /nodes/get
+interface NodesGetReq { doc: Handle; handles: Handle[]; detail?: "summary" | "full" }  // default "summary"
+interface NodesGetRes { nodes: (NodeSummary | NodeDetail)[]; missing: Handle[] }       // stale handles -> missing
+
+// GET /selection?doc=N -> { nodes: Handle[]; faces: { brush: Handle; face: number }[] }
+
+// POST /handles/validate
+//   req { doc: Handle; handles: Handle[] } -> { valid: Handle[]; invalid: Handle[] }
+
+// GET /materials?doc=N -> { collections: { name: string; materials: string[] }[] }
+
+// GET /entityclasses?doc=N
+interface EntityClassesRes {
+  classes: { classname: string; type: "point" | "brush";
+             description?: string; bounds?: Bounds /* point classes only */ }[];
+}
+
+// POST /contains
+//   req { doc: Handle; points: Vec3[] } -> { results: { point: Vec3; handles: Handle[] }[] }
+
+// POST /raycast
+interface RaycastReq {
+  doc: Handle;
+  rays: { origin: Vec3; direction: Vec3 /* nonzero, any length */;
+          maxDistance?: number; ignore?: Handle[] }[];
+}
+interface RaycastRes { results: RayHit[][] }  // results[i] = ALL hits of rays[i],
+// sorted near->far; [] = miss. Entry faces only (exits never reported). Hidden
+// geometry is never hit. Hits are entity|brush|patch nodes only.
+
+// ---------- Mutation: POST /edit ----------
+// POST /edit            -> atomic: first failing op cancels the WHOLE batch (HTTP 422)
+// POST /edit?onError=continue -> failures skipped, survivors committed (HTTP 200)
+// Either way the response body is OpResult[], one per op, same order, and the
+// committed batch is exactly ONE undo step.
+
+interface EditReq { doc: Handle; ops: Op[] }
+
+type Op = (
+  | { op: "select"; nodes?: HandleOrRef[]; faces?: FaceRef[];
+      mode?: "replace" | "add" | "remove" }                 // default "replace"
+  | { op: "brush"; shape: BrushShape; material?: string;    // default: current material
+      layer?: HandleOrRef }                                 // parent layer/group; default: current layer
+  | { op: "entity"; classname: string; position?: Vec3;     // position -> "origin" property
+      properties?: Record<string, string>;
+      brushes?: HandleOrRef[] }                             // present = brush entity wrapping these
+  | { op: "setProps"; handle: HandleOrRef;                  // entity node, or world handle for worldspawn
+      set?: Record<string, string>; remove?: string[] }
+  | { op: "paint"; faces: FaceRef[] /* non-empty */; attributes: FaceAttributes }
+  | { op: "transform"; handles?: HandleOrRef[]; transform: Transform }
+  | { op: "delete"; handles: HandleOrRef[] }                // world/layer handles -> error
+  | { op: "csg"; operation: "subtract" | "convexMerge" | "intersect" | "hollow";
+      handles?: HandleOrRef[] }
+  | { op: "clip"; handles?: HandleOrRef[];                  // brushes
+      plane: { points: [Vec3, Vec3, Vec3] } | { point: Vec3; normal: Vec3 };
+      keep: "front" | "back" | "both" }
+) & { as?: string };  // binds result handle(s); later ops use "@<as>"
+
+type BrushShape =
+  | { box: Bounds }
+  | { cylinder: { bounds: Bounds; axis: "x" | "y" | "z"; sides: number /* 3..256 */ } }
+  | { points: Vec3[] };  // >= 4 points, convex hull
+
+interface FaceAttributes {   // all optional; omitted = unchanged
+  material?: string; xOffset?: number; yOffset?: number;
+  rotation?: number; xScale?: number; yScale?: number;
+}
+
+type Transform =             // exactly one key
+  | { translate: Vec3 }
+  | { rotate: { center: Vec3; axis: Vec3; angle: number /* radians */ } }
+  | { scale: { center: Vec3; factors: Vec3 } }
+  | { matrix: number[] };    // 16 numbers, row-major 4x4
+
+type OpResult =
+  | { ok: true; handle?: Handle /* brush, entity */; handles?: Handle[] /* csg, clip */ }
+  | { ok: false; error: string; skipped?: true };  // skipped: not run, earlier op failed (atomic mode)
+// In an atomic-failure (422) response, every handle in the body is VOID — the
+// transaction was rolled back.
+
+// ---------- History / IO (POST, body { doc: Handle }) ----------
+// /undo, /redo -> { ok: boolean; name?: string }   // ok:false = nothing to undo/redo
+// /save -> { ok: true; path: string } | 422 ApiError if never saved to disk
+
+// ---------- Semantics that bite ----------
+// Handles: session-scoped, never persisted. Map reload remints node handles
+//   (document handles survive). delete kills a handle; undoing that delete
+//   resurrects the SAME handle. csg/clip results are NEW handles; the inputs'
+//   handles die. transform/setProps/paint keep handles.
+// Refs: backward-only, batch-local. A ref bound to a handle LIST is accepted in
+//   single-handle position iff the list has exactly one element.
+// Selection: ops act on the current selection when handles? is omitted.
+//   Supplying handles on transform/csg/clip REPLACES the selection with those
+//   nodes (observable side effect). select/brush/entity/setProps/paint/delete do
+//   not otherwise disturb the selection (delete deselects what it removes).
+//   Ops see selection changes made by earlier ops in the same batch.
+// csg subtract: the operands are the SUBTRAHEND — carved out of every brush they
+//   touch, then deleted. To cut a hole, pass only the cutter brush(es).
+// clip: "front" = the side the plane normal points into; for 3 points the normal
+//   is cross(p2-p1, p3-p1). Brushes wholly on a discarded side are removed.
+// Face indices: positional per brush; any geometry change (clip/csg/vertex edit)
+//   invalidates them. Re-read (/nodes/get full or /raycast) before painting.
+//   Fresh boxes are predictable; reshaped geometry is not.
+//
+// Typical flow: GET /documents -> reads//raycast -> one /edit batch composing
+// create/select/csg/clip/paint via @refs -> /save.
