@@ -38,13 +38,17 @@ class Ref:
     commits, ``.handle`` / ``.handles`` hold the server-assigned values.
     """
 
-    def __init__(self, batch: EditBatch, name: str, index: int) -> None:
+    def __init__(self, batch: EditBatch, name: str | None, index: int) -> None:
         self._batch = batch
         self._name = name
         self._index = index
 
     @property
     def wire(self) -> str:
+        if self._name is None:
+            raise TrenchBroomError(
+                f"op {self._index} produces no handle and cannot be used as one"
+            )
         return f"@{self._name}"
 
     @property
@@ -76,7 +80,7 @@ class Ref:
         raise TrenchBroomError(f"op {self._index} produced no handles: {r}")
 
     def __repr__(self) -> str:
-        return f"Ref({self.wire})"
+        return f"Ref(@{self._name})" if self._name is not None else f"Ref(op {self._index})"
 
 
 def _h(h: HandleLike) -> int | str:
@@ -113,13 +117,17 @@ class EditBatch:
 
     # -- plumbing ---------------------------------------------------------
 
-    def _add(self, op: dict[str, Any], as_: str | None = None) -> Ref:
+    def _add(self, op: dict[str, Any], as_: str | None = None, *, bind: bool = True) -> Ref:
+        # The server rejects "as" on ops that produce no handle (select,
+        # setProps, paint, transform, delete), so only binding ops get one.
         index = len(self._ops)
-        name = as_ or f"r{index}"
-        if name in self._refnames:
-            raise ValueError(f"duplicate ref name: {name}")
-        self._refnames.add(name)
-        op["as"] = name
+        name = None
+        if bind:
+            name = as_ or f"r{index}"
+            if name in self._refnames:
+                raise ValueError(f"duplicate ref name: {name}")
+            self._refnames.add(name)
+            op["as"] = name
         self._ops.append(op)
         return Ref(self, name, index)
 
@@ -150,7 +158,7 @@ class EditBatch:
             op["nodes"] = _hs(nodes)
         if faces is not None:
             op["faces"] = [_face_ref(f) for f in faces]
-        return self._add(op)
+        return self._add(op, bind=False)
 
     def _brush(
         self, shape: dict[str, Any], material: str | None, layer: HandleLike | None, as_: str | None
@@ -222,7 +230,7 @@ class EditBatch:
             op["set"] = set
         if remove is not None:
             op["remove"] = list(remove)
-        return self._add(op)
+        return self._add(op, bind=False)
 
     def paint(
         self,
@@ -246,13 +254,13 @@ class EditBatch:
             if val is not None:
                 attrs[key] = val
         op = {"op": "paint", "faces": [_face_ref(f) for f in faces], "attributes": attrs}
-        return self._add(op)
+        return self._add(op, bind=False)
 
     def _transform(self, transform: dict[str, Any], handles: Iterable[HandleLike] | None) -> Ref:
         op: dict[str, Any] = {"op": "transform", "transform": transform}
         if handles is not None:
             op["handles"] = _hs(handles)
-        return self._add(op)
+        return self._add(op, bind=False)
 
     def translate(self, offset: VecLike, handles: Iterable[HandleLike] | None = None) -> Ref:
         """Translate `handles` (or the current selection if omitted)."""
@@ -287,7 +295,7 @@ class EditBatch:
         return self._transform({"matrix": m}, handles)
 
     def delete(self, handles: Iterable[HandleLike]) -> Ref:
-        return self._add({"op": "delete", "handles": _hs(handles)})
+        return self._add({"op": "delete", "handles": _hs(handles)}, bind=False)
 
     def csg(
         self,
