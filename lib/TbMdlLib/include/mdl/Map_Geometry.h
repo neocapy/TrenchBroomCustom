@@ -73,6 +73,20 @@ bool csgSubtract(Map& map);
 bool csgIntersect(Map& map);
 bool csgHollow(Map& map);
 
+/**
+ * Clips the selected brushes by the plane through the given three points, replacing
+ * them with the pieces in front of the plane (on the side of the normal implied by
+ * the point order), behind it, or both. The resulting pieces are selected. Returns
+ * false if no brushes are selected.
+ */
+bool clipSelectedBrushes(
+  Map& map,
+  const vm::vec3d& p1,
+  const vm::vec3d& p2,
+  const vm::vec3d& p3,
+  bool keepFront,
+  bool keepBack);
+
 bool extrudeBrushes(
   Map& map, const std::vector<vm::polygon3d>& faces, const vm::vec3d& delta);
 

@@ -1394,6 +1394,72 @@ TEST_CASE("Map_Geometry")
     }
   }
 
+  SECTION("clipSelectedBrushes")
+  {
+    auto& map = fixture.create();
+    const auto builder = BrushBuilder{map.worldNode().mapFormat(), map.worldBounds()};
+
+    auto* brushNode = new BrushNode{
+      builder.createCuboid(vm::bbox3d{{0, 0, 0}, {64, 64, 64}}, "material")
+      | kdl::value()};
+    addNodes(map, {{parentForNodes(map), {brushNode}}});
+    selectNodes(map, {brushNode});
+
+    // the plane z = 32 with its normal pointing up; "front" is the upper piece
+    const auto p1 = vm::vec3d{0, 0, 32};
+    const auto p2 = vm::vec3d{1, 0, 32};
+    const auto p3 = vm::vec3d{0, 1, 32};
+
+    auto* layerNode = map.editorContext().currentLayer();
+
+    SECTION("keep front")
+    {
+      CHECK(clipSelectedBrushes(map, p1, p2, p3, true, false));
+      CHECK(layerNode->childCount() == 1);
+      CHECK(
+        layerNode->children().front()->logicalBounds()
+        == vm::bbox3d{{0, 0, 32}, {64, 64, 64}});
+      CHECK(map.selection().nodes == layerNode->children());
+    }
+
+    SECTION("keep back")
+    {
+      CHECK(clipSelectedBrushes(map, p1, p2, p3, false, true));
+      CHECK(layerNode->childCount() == 1);
+      CHECK(
+        layerNode->children().front()->logicalBounds()
+        == vm::bbox3d{{0, 0, 0}, {64, 64, 32}});
+    }
+
+    SECTION("keep both")
+    {
+      CHECK(clipSelectedBrushes(map, p1, p2, p3, true, true));
+      CHECK(layerNode->childCount() == 2);
+      CHECK(
+        layerNode->children()[0]->logicalBounds().size()
+        == vm::vec3d{64, 64, 32});
+      CHECK(
+        layerNode->children()[1]->logicalBounds().size()
+        == vm::vec3d{64, 64, 32});
+    }
+
+    SECTION("a brush entirely on the discarded side is removed")
+    {
+      CHECK(clipSelectedBrushes(map, {0, 0, 128}, {1, 0, 128}, {0, 1, 128}, true, false));
+      CHECK(layerNode->childCount() == 0);
+      CHECK(!map.selection().hasNodes());
+    }
+
+    SECTION("undo restores the original brush and selection")
+    {
+      REQUIRE(clipSelectedBrushes(map, p1, p2, p3, true, false));
+      map.undoCommand();
+      CHECK(layerNode->childCount() == 1);
+      CHECK(layerNode->children().front() == brushNode);
+      CHECK(map.selection().nodes == std::vector<Node*>{brushNode});
+    }
+  }
+
   SECTION("extrudeBrushes")
   {
     auto& map = fixture.create();

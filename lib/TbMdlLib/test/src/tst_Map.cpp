@@ -129,6 +129,29 @@ TEST_CASE("Map")
     }
   }
 
+  SECTION("canUndoCommand and canRedoCommand")
+  {
+    auto fixture = MapFixture{};
+
+    auto& map = fixture.create();
+    CHECK(!map.canUndoCommand());
+    CHECK(!map.canRedoCommand());
+
+    auto* entityNode = new EntityNode{Entity{{{"key", "value"}}}};
+    addNodes(map, {{parentForNodes(map), {entityNode}}});
+
+    CHECK(map.canUndoCommand());
+    CHECK(!map.canRedoCommand());
+
+    map.undoCommand();
+    CHECK(!map.canUndoCommand());
+    CHECK(map.canRedoCommand());
+
+    map.redoCommand();
+    CHECK(map.canUndoCommand());
+    CHECK(!map.canRedoCommand());
+  }
+
   SECTION("modified")
   {
     auto fixture = MapFixture{};

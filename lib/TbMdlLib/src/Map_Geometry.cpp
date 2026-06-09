@@ -874,6 +874,94 @@ bool csgHollow(Map& map)
   return transaction.commit();
 }
 
+namespace
+{
+
+// Copies the attributes of the existing face whose normal best matches the clip face,
+// mirroring ClipTool::setFaceAttributes.
+void copyBestMatchingFaceAttributes(
+  const std::vector<BrushFace>& faces, BrushFace& toSet)
+{
+  contract_pre(!faces.empty());
+
+  auto bestMatch = std::begin(faces);
+  for (auto faceIt = std::next(bestMatch); faceIt != std::end(faces); ++faceIt)
+  {
+    const auto bestDiff = bestMatch->boundary().normal - toSet.boundary().normal;
+    const auto curDiff = faceIt->boundary().normal - toSet.boundary().normal;
+    if (vm::squared_length(curDiff) < vm::squared_length(bestDiff))
+    {
+      bestMatch = faceIt;
+    }
+  }
+
+  toSet.setAttributes(*bestMatch);
+}
+
+} // namespace
+
+bool clipSelectedBrushes(
+  Map& map,
+  const vm::vec3d& p1,
+  const vm::vec3d& p2,
+  const vm::vec3d& p3,
+  const bool keepFront,
+  const bool keepBack)
+{
+  const auto brushNodes = map.selection().brushes;
+  if (brushNodes.empty() || (!keepFront && !keepBack))
+  {
+    return false;
+  }
+
+  const auto& worldBounds = map.worldBounds();
+  auto toAdd = std::map<Node*, std::vector<Node*>>{};
+
+  const auto clip = [&](
+                      BrushNode* brushNode,
+                      const vm::vec3d& q1,
+                      const vm::vec3d& q2,
+                      const vm::vec3d& q3) {
+    auto brush = brushNode->brush();
+    BrushFace::create(
+      q1,
+      q2,
+      q3,
+      BrushFaceAttributes{map.currentMaterialName()},
+      map.worldNode().mapFormat())
+      | kdl::and_then([&](BrushFace&& clipFace) {
+          copyBestMatchingFaceAttributes(brush.faces(), clipFace);
+          return brush.clip(worldBounds, std::move(clipFace));
+        })
+      | kdl::transform(
+        [&]() { toAdd[brushNode->parent()].push_back(new BrushNode{std::move(brush)}); })
+      | kdl::transform_error([&](auto e) {
+          // a brush entirely on the discarded side of the plane yields no piece
+          map.logger().error() << "Could not clip brush: " << e.msg;
+        });
+  };
+
+  for (auto* brushNode : brushNodes)
+  {
+    if (keepFront)
+    {
+      clip(brushNode, p1, p2, p3);
+    }
+    if (keepBack)
+    {
+      clip(brushNode, p1, p3, p2);
+    }
+  }
+
+  auto transaction = Transaction{map, "Clip Brushes"};
+  const auto toRemove = kdl::vec_static_cast<Node*>(brushNodes);
+  const auto added = addNodes(map, toAdd);
+  deselectAll(map);
+  removeNodes(map, toRemove);
+  selectNodes(map, added);
+  return transaction.commit();
+}
+
 bool extrudeBrushes(
   Map& map, const std::vector<vm::polygon3d>& faces, const vm::vec3d& delta)
 {

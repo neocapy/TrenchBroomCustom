@@ -511,9 +511,9 @@ of operations; they run in order as a single transaction, so the whole array is
 one undo step. The response is an array of results, one per op, in the same order.
 
 ```
-POST /edit                      // atomic: any failure rolls back the whole batch
+POST /edit                      // [built] atomic: any failure rolls back the whole batch
 POST /edit?onError=continue     // skip failures, commit the survivors (still one undo step)
-  req  Op[]
+  req  { doc: Handle, ops: Op[] }
   ->   OpResult[]               // one per op, same order
 ```
 
@@ -528,7 +528,9 @@ An op may carry `as: "<name>"` to label its result; a later op in the same batch
 then passes `"@name"` anywhere a handle is accepted. References are backward-only.
 Real handles are numbers and refs are strings, so the two never collide. This is
 what lets one batch build a compound object — create brushes, then wrap them in an
-entity — and still be a single undo step.
+entity — and still be a single undo step. A ref bound to a handle list (from `csg`
+or `clip`) is accepted where a single handle is required iff the list has exactly
+one element — the common case after a `convexMerge` or a one-sided `clip`.
 
 ```
 Op = { op: "select",    nodes?: HandleOrRef[], faces?: FaceRef[],
@@ -567,9 +569,9 @@ These act on the command history or the filesystem, not on document content, so
 they are not `/edit` ops:
 
 ```
-POST /undo  -> { ok: boolean, name?: string }
+POST /undo  -> { ok: boolean, name?: string }    // [built] all three; req { doc: Handle }
 POST /redo  -> { ok: boolean, name?: string }
-POST /save  -> { ok: boolean, path: string }
+POST /save  -> { ok: boolean, path: string }     // 422 if the document was never saved
 ```
 
 Notes:
@@ -625,14 +627,13 @@ Notes:
 
 ## Implementation status
 
-Built and verified: node identity (section 7), document identity, the server
-(sections 10-11), and the entire read surface of section 13 — document,
-scene-graph, palette (`/materials`, `/entityclasses`), and spatial (`/contains`,
-`/raycast`) routes. Mutation (`POST /edit`) and history/IO are still design only.
+Built and verified: the entire v1 surface of section 13. Node identity (section 7),
+document identity, the server (sections 10-11), all read routes, the `POST /edit`
+batch executor with every op, and `/undo`, `/redo`, `/save`.
 
 The work lives on branch `http-control-api` (pushed to `origin`): node identity +
 server scaffold; document handle + `GET /documents`; the document and scene-graph
-read routes; the palette and spatial read routes.
+read routes; the palette and spatial read routes; the mutation surface.
 
 - `mdl::Node` carries a `std::uint64_t` id minted on construction from a
   process-global atomic (`mdl::nextNodeId()`; starts at 1, with 0 reserved as a
@@ -685,12 +686,49 @@ The remaining read routes (commit 4):
   `/materials` returned the correct empty list for a wad-less map; not yet
   exercised against a document with loaded material collections.
 
-Next:
+The mutation surface (commit 5):
 
-- `POST /edit` batch executor: the `as` / `@ref` resolution table, the per-op
-  handlers, and `onError` (abort vs continue). `clip` still needs a
-  `clipSelectedBrushes` path.
-- `POST /undo`, `/redo`, `/save`.
+- `POST /edit` runs `{ doc, ops }` (the spec's `req Op[]` plus the required `doc`
+  selector) inside one `mdl::Transaction` named "API Edit", with command collation
+  disabled around the batch so consecutive batches stay separately undoable, and a
+  409 guard when a modal tool is mid-drag. Atomic mode cancels on first failure and
+  replies 422 with the results array (later ops marked `skipped`);
+  `onError=continue` commits the survivors and replies 200.
+- Implementation choices per op: `brush` builds through `BrushBuilder` (cuboid /
+  edge-aligned cylinder / convex hull of points) with the game's default face
+  attributes and adds via `addNodes`, so the new node's handle is returned directly.
+  `entity` constructs the `Entity` by hand (classname, `origin` from `position`,
+  properties, plus definition defaults when the game config asks for them), adds it,
+  and reparents the given brushes into it. `setProps` and `paint` avoid touching the
+  selection entirely: `setProps` swaps entity contents via `updateNodeContents` (and
+  works on the world node for worldspawn properties); `paint` uses `applyAndSwap`
+  over explicit `BrushFaceHandle`s with `UpdateBrushFaceAttributes`. `transform`,
+  `csg`, and `clip` are selection verbs in the model, so an explicit `handles` list
+  means "replace the selection with these, then act" — the selection change is
+  observable, by design. `delete` takes explicit nodes, deselects them and their
+  selected descendants/faces first (the remove command does not), and refuses the
+  world and layers.
+- `csg subtract` follows the editor's semantics: the operand brushes are the
+  *subtrahend*, carved out of every brush they touch, and are themselves removed.
+- `clip` maps to the new `mdl::clipSelectedBrushes(map, p1, p2, p3, keepFront,
+  keepBack)` in `Map_Geometry`, lifted from `ClipTool` (including its best-matching-
+  face attribute copy). "front" is the side of the plane normal: for three points,
+  `cross(p2-p1, p3-p1)`; for `{point, normal}` the server builds tangents so the
+  given normal is "front". Covered by new `Map_Geometry` unit tests (front / back /
+  both / fully-discarded / undo-restores-selection).
+- Found and fixed an upstream copy-paste bug while testing: `Map::canRedoCommand()`
+  checked `undoCommandName()` instead of `redoCommandName()`, so redo always
+  reported unavailable right after an undo. Regression test added in `tst_Map.cpp`.
+- Also fixed on the read side: world-node detail now carries worldspawn's
+  `classname` and `properties` (the serializer previously treated `WorldNode` as
+  having neither).
+- Verified end to end against a live map: compound batches (create boxes, convex-
+  merge via refs, paint the result, rotate it — one undo step, exact expected
+  bounds), clip front/back/both with exact bounds, subtract fragments, entity
+  wrapping + setProps + worldspawn props, atomic rollback (422, nothing applied),
+  continue mode (200, survivors committed), skipped markers, stale-handle and
+  malformed-op errors, undo/redo handle resurrection, and `/save` round-tripping
+  everything to disk. The full TbMdlLib suite passes (74196 assertions, 195 cases).
 
 ## Open questions and deferrals
 

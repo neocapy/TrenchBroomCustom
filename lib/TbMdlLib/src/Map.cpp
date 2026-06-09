@@ -1459,7 +1459,7 @@ bool Map::canUndoCommand() const
 
 bool Map::canRedoCommand() const
 {
-  return m_commandProcessor->undoCommandName() != nullptr;
+  return m_commandProcessor->redoCommandName() != nullptr;
 }
 
 const std::string* Map::undoCommandName() const
