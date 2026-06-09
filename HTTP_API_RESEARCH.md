@@ -440,8 +440,8 @@ NodeDetail = NodeSummary & {
 }
 
 RayHit = {
-  hit: boolean, point?: Vec3, distance?: number, normal?: Vec3,
-  handle?: Handle,           // the node that was hit
+  point: Vec3, distance: number, handle: Handle,   // the node that was hit
+  normal?: Vec3,             // face normal, when a brush face was hit
   face?: number,             // face index, when a brush face was hit
   material?: string          // material of that face
 }
@@ -483,18 +483,23 @@ POST /handles/validate                       // [built]
   req { doc: Handle, handles: Handle[] }
   -> { valid: Handle[], invalid: Handle[] }
 
-GET  /materials?doc=<handle>
+GET  /materials?doc=<handle>                 // [built]
   -> { collections: { name: string, materials: string[] }[] }
 
-GET  /entityclasses?doc=<handle>
-  -> { classes: { classname: string, type: "point" | "brush", bounds?: Bounds }[] }
+GET  /entityclasses?doc=<handle>             // [built]
+  -> { classes: { classname: string, type: "point" | "brush",
+                  description?: string, bounds?: Bounds }[] }   // bounds: point classes only
 
-POST /raycast
+POST /raycast                                // [built]
   req { doc: Handle, rays: { origin: Vec3, direction: Vec3, maxDistance?: number,
                 ignore?: Handle[] }[] }
-  -> { results: RayHit[] }                  // one per ray, same order
+  -> { results: RayHit[][] }                // one array per ray, same order; all hits
+                                            // along the ray, front to back; [] = no hit.
+                                            // Entry faces only: the picker backface-culls,
+                                            // so a ray reports where it enters geometry,
+                                            // never where it exits.
 
-POST /contains
+POST /contains                               // [built]
   req { doc: Handle, points: Vec3[] }
   -> { results: { point: Vec3, handles: Handle[] }[] }   // nodes containing each point
 ```
@@ -621,12 +626,13 @@ Notes:
 ## Implementation status
 
 Built and verified: node identity (section 7), document identity, the server
-(sections 10-11), and the document and scene-graph read routes (section 13).
-Mutation and the spatial/palette reads are still design only.
+(sections 10-11), and the entire read surface of section 13 — document,
+scene-graph, palette (`/materials`, `/entityclasses`), and spatial (`/contains`,
+`/raycast`) routes. Mutation (`POST /edit`) and history/IO are still design only.
 
-The work lives on branch `http-control-api` (pushed to `origin`), three commits:
-node identity + server scaffold; document handle + `GET /documents`; the document
-and scene-graph read routes.
+The work lives on branch `http-control-api` (pushed to `origin`): node identity +
+server scaffold; document handle + `GET /documents`; the document and scene-graph
+read routes; the palette and spatial read routes.
 
 - `mdl::Node` carries a `std::uint64_t` id minted on construction from a
   process-global atomic (`mdl::nextNodeId()`; starts at 1, with 0 reserved as a
@@ -657,17 +663,34 @@ and scene-graph read routes.
   layer, group, entity, brush, and patch. Smoke-tested offscreen across every
   resolver error path; the data paths verified by hand against an open map.
 
-Next, in order:
+The remaining read routes (commit 4):
 
-- `GET /materials` and `GET /entityclasses`: palette enumeration from the material
-  manager and the entity-definition manager. Expected to be straightforward.
-- `POST /contains`: maps onto `Node::findNodesContaining`.
-- `POST /raycast`: needs the picking subsystem (`PickResult` + `EditorContext`).
-  Open design fork: what counts as a hit, and whether hidden / locked geometry is
-  ignored.
+- `GET /materials` and `GET /entityclasses` enumerate `map.materialManager().
+  collections()` and `map.entityDefinitionManager().definitions()` directly.
+  Entity classes carry `description` (free and useful for an assist UI) and
+  `bounds` for point classes.
+- `POST /contains` maps onto `mdl::findNodesContaining`.
+- `POST /raycast` uses `mdl::pick` (`PickResult::byDistance`), which routes
+  through `EditorContext` — the design fork resolved as: inherit the UI's hover
+  semantics, so hidden geometry is not hit. Hits are filtered to
+  `mdl::nodeHitType()` (entity | brush | patch) plus the request's `ignore` set
+  and `maxDistance`. Each ray returns all hits front to back (`PickResult` keeps
+  hits distance-sorted on insertion). Entry hits only: `BrushFace::
+  intersectWithRay` backface-culls, so exit faces would need model changes —
+  deliberately skipped.
+- Verified by hand against a live map with known geometry (a box brush and an
+  info_player_start): contains inside/outside, raycast hit ordering past the
+  entity bbox onto the brush top face with exact distances and normals,
+  maxDistance cutoff, ignore filtering, and every 400/404/409 error path.
+  `/materials` returned the correct empty list for a wad-less map; not yet
+  exercised against a document with loaded material collections.
+
+Next:
+
 - `POST /edit` batch executor: the `as` / `@ref` resolution table, the per-op
   handlers, and `onError` (abort vs continue). `clip` still needs a
   `clipSelectedBrushes` path.
+- `POST /undo`, `/redo`, `/save`.
 
 ## Open questions and deferrals
 

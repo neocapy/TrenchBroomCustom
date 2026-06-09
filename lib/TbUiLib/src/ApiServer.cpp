@@ -43,25 +43,39 @@
 #include "mdl/BrushFaceHandle.h"
 #include "mdl/BrushNode.h"
 #include "mdl/Entity.h"
+#include "mdl/EntityDefinition.h"
+#include "mdl/EntityDefinitionManager.h"
 #include "mdl/EntityNode.h"
 #include "mdl/EntityProperties.h"
 #include "mdl/GroupNode.h"
+#include "mdl/Hit.h"
+#include "mdl/HitAdapter.h"
+#include "mdl/HitFilter.h"
 #include "mdl/LayerNode.h"
 #include "mdl/Map.h"
 #include "mdl/MapFormat.h"
+#include "mdl/Map_Picking.h"
+#include "mdl/ModelUtils.h"
 #include "mdl/Node.h"
 #include "mdl/PatchNode.h"
+#include "mdl/PickResult.h"
 #include "mdl/Selection.h"
 #include "mdl/WorldNode.h"
+
+#include "gl/Material.h"
+#include "gl/MaterialCollection.h"
+#include "gl/MaterialManager.h"
 
 #include "kd/overload.h"
 
 #include "vm/bbox.h"
+#include "vm/ray.h"
 #include "vm/vec.h"
 
 #include <algorithm>
 #include <cstdint>
 #include <optional>
+#include <unordered_set>
 
 namespace tb::ui
 {
@@ -77,6 +91,22 @@ QHttpServerResponse jsonError(const QString& message, const StatusCode status)
 QJsonArray vec3ToJson(const vm::vec3d& v)
 {
   return QJsonArray{v[0], v[1], v[2]};
+}
+
+std::optional<vm::vec3d> vec3FromJson(const QJsonValue& value)
+{
+  if (!value.isArray())
+  {
+    return std::nullopt;
+  }
+  const auto array = value.toArray();
+  if (
+    array.size() != 3 || !array[0].isDouble() || !array[1].isDouble()
+    || !array[2].isDouble())
+  {
+    return std::nullopt;
+  }
+  return vm::vec3d{array[0].toDouble(), array[1].toDouble(), array[2].toDouble()};
 }
 
 QJsonObject boundsToJson(const vm::bbox3d& bounds)
@@ -482,6 +512,192 @@ QHttpServerResponse handleHandlesValidate(
   return QHttpServerResponse{QJsonObject{{"valid", valid}, {"invalid", invalid}}};
 }
 
+QHttpServerResponse handleGetMaterials(
+  AppController& appController, const QHttpServerRequest& request)
+{
+  auto resolved = resolveDocFromQuery(appController, request);
+  if (resolved.error)
+  {
+    return std::move(*resolved.error);
+  }
+  const auto& map = resolved.document->map();
+
+  auto collections = QJsonArray{};
+  for (const auto& collection : map.materialManager().collections())
+  {
+    auto materials = QJsonArray{};
+    for (const auto& material : collection.materials())
+    {
+      materials.append(QString::fromStdString(material.name()));
+    }
+    collections.append(QJsonObject{
+      {"name", QString::fromStdString(collection.path().generic_string())},
+      {"materials", materials},
+    });
+  }
+  return QHttpServerResponse{QJsonObject{{"collections", collections}}};
+}
+
+QHttpServerResponse handleGetEntityClasses(
+  AppController& appController, const QHttpServerRequest& request)
+{
+  auto resolved = resolveDocFromQuery(appController, request);
+  if (resolved.error)
+  {
+    return std::move(*resolved.error);
+  }
+  const auto& map = resolved.document->map();
+
+  auto classes = QJsonArray{};
+  for (const auto& definition : map.entityDefinitionManager().definitions())
+  {
+    const auto point = getType(definition) == mdl::EntityDefinitionType::Point;
+    auto classJson = QJsonObject{
+      {"classname", QString::fromStdString(definition.name)},
+      {"type", point ? QStringLiteral("point") : QStringLiteral("brush")},
+    };
+    if (!definition.description.empty())
+    {
+      classJson["description"] = QString::fromStdString(definition.description);
+    }
+    if (definition.pointEntityDefinition)
+    {
+      classJson["bounds"] = boundsToJson(definition.pointEntityDefinition->bounds);
+    }
+    classes.append(classJson);
+  }
+  return QHttpServerResponse{QJsonObject{{"classes", classes}}};
+}
+
+QHttpServerResponse handleContains(
+  AppController& appController, const QHttpServerRequest& request)
+{
+  auto resolved = resolveBodyAndDoc(appController, request);
+  if (resolved.error)
+  {
+    return std::move(*resolved.error);
+  }
+  auto& map = resolved.document->map();
+
+  const auto pointsValue = resolved.body.value("points");
+  if (!pointsValue.isArray())
+  {
+    return jsonError("points must be an array of Vec3", StatusCode::BadRequest);
+  }
+
+  auto results = QJsonArray{};
+  for (const auto& pointValue : pointsValue.toArray())
+  {
+    const auto point = vec3FromJson(pointValue);
+    if (!point)
+    {
+      return jsonError(
+        "each point must be an array of three numbers", StatusCode::BadRequest);
+    }
+
+    auto handles = QJsonArray{};
+    for (const auto* node : mdl::findNodesContaining(map, *point))
+    {
+      handles.append(static_cast<qint64>(node->id()));
+    }
+    results.append(QJsonObject{{"point", vec3ToJson(*point)}, {"handles", handles}});
+  }
+  return QHttpServerResponse{QJsonObject{{"results", results}}};
+}
+
+QJsonObject rayHitJson(const mdl::Hit& hit)
+{
+  auto json = QJsonObject{
+    {"point", vec3ToJson(hit.hitPoint())},
+    {"distance", hit.distance()},
+  };
+  if (const auto* node = mdl::hitToNode(hit))
+  {
+    json["handle"] = static_cast<qint64>(node->id());
+  }
+  if (const auto faceHandle = mdl::hitToFaceHandle(hit))
+  {
+    json["face"] = static_cast<qint64>(faceHandle->faceIndex());
+    json["normal"] = vec3ToJson(faceHandle->face().normal());
+    json["material"] =
+      QString::fromStdString(faceHandle->face().attributes().materialName());
+  }
+  return json;
+}
+
+QHttpServerResponse handleRaycast(
+  AppController& appController, const QHttpServerRequest& request)
+{
+  auto resolved = resolveBodyAndDoc(appController, request);
+  if (resolved.error)
+  {
+    return std::move(*resolved.error);
+  }
+  auto& map = resolved.document->map();
+
+  const auto raysValue = resolved.body.value("rays");
+  if (!raysValue.isArray())
+  {
+    return jsonError("rays must be an array", StatusCode::BadRequest);
+  }
+
+  auto results = QJsonArray{};
+  for (const auto& rayValue : raysValue.toArray())
+  {
+    if (!rayValue.isObject())
+    {
+      return jsonError("each ray must be an object", StatusCode::BadRequest);
+    }
+    const auto rayJson = rayValue.toObject();
+
+    const auto origin = vec3FromJson(rayJson.value("origin"));
+    const auto direction = vec3FromJson(rayJson.value("direction"));
+    if (!origin || !direction)
+    {
+      return jsonError(
+        "each ray must have Vec3 origin and direction", StatusCode::BadRequest);
+    }
+    if (vm::is_zero(*direction, vm::Cd::almost_zero()))
+    {
+      return jsonError("ray direction must not be zero", StatusCode::BadRequest);
+    }
+
+    const auto maxDistanceValue = rayJson.value("maxDistance");
+    const auto maxDistance = maxDistanceValue.isDouble()
+                               ? std::optional{maxDistanceValue.toDouble()}
+                               : std::nullopt;
+
+    auto ignore = std::unordered_set<std::uint64_t>{};
+    for (const auto& handleValue : rayJson.value("ignore").toArray())
+    {
+      ignore.insert(static_cast<std::uint64_t>(handleValue.toInteger()));
+    }
+
+    const auto filter = mdl::HitFilters::type(mdl::nodeHitType())
+                        && mdl::HitFilter{[&](const mdl::Hit& hit) {
+                             if (maxDistance && hit.distance() > *maxDistance)
+                             {
+                               return false;
+                             }
+                             const auto* node = mdl::hitToNode(hit);
+                             return !node || !ignore.contains(node->id());
+                           }};
+
+    // PickResult::byDistance keeps hits sorted on insertion, so all(filter) is
+    // already front to back.
+    auto pickResult = mdl::PickResult::byDistance();
+    mdl::pick(map, vm::ray3d{*origin, vm::normalize(*direction)}, pickResult);
+
+    auto hits = QJsonArray{};
+    for (const auto& hit : pickResult.all(filter))
+    {
+      hits.append(rayHitJson(hit));
+    }
+    results.append(hits);
+  }
+  return QHttpServerResponse{QJsonObject{{"results", results}}};
+}
+
 } // namespace
 
 ApiServer::ApiServer(AppController& appController, QObject* parent)
@@ -555,6 +771,34 @@ void ApiServer::registerRoutes()
     QHttpServerRequest::Method::Post,
     [this](const QHttpServerRequest& request) {
       return handleHandlesValidate(m_appController, request);
+    });
+
+  m_httpServer->route(
+    "/materials",
+    QHttpServerRequest::Method::Get,
+    [this](const QHttpServerRequest& request) {
+      return handleGetMaterials(m_appController, request);
+    });
+
+  m_httpServer->route(
+    "/entityclasses",
+    QHttpServerRequest::Method::Get,
+    [this](const QHttpServerRequest& request) {
+      return handleGetEntityClasses(m_appController, request);
+    });
+
+  m_httpServer->route(
+    "/contains",
+    QHttpServerRequest::Method::Post,
+    [this](const QHttpServerRequest& request) {
+      return handleContains(m_appController, request);
+    });
+
+  m_httpServer->route(
+    "/raycast",
+    QHttpServerRequest::Method::Post,
+    [this](const QHttpServerRequest& request) {
+      return handleRaycast(m_appController, request);
     });
 }
 
