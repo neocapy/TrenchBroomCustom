@@ -34,7 +34,7 @@ class AppController;
  * Runs Qt's QHttpServer on the GUI thread and binds to 127.0.0.1 only, so route
  * handlers reach the live model directly with no marshaling and each request is
  * atomic with respect to UI input. This is the v1 scaffold; it serves a single
- * read-only route, GET /document.
+ * read-only route, GET /documents.
  */
 class ApiServer : public QObject
 {

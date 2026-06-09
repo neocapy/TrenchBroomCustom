@@ -2414,7 +2414,9 @@ void printNodeTree(Logger& logger, const mdl::Node& node, const size_t depth)
 void MapWindow::debugPrintNodeTree()
 {
   const auto& map = m_document->map();
-  logger().info() << "Node tree (" << map.worldNode().familySize() << " nodes):";
+  logger().info() << "Document [" << m_document->id() << "] \""
+                  << map.path().filename().generic_string() << "\" - node tree ("
+                  << map.worldNode().familySize() << " nodes):";
   printNodeTree(logger(), map.worldNode(), 0);
 }
 

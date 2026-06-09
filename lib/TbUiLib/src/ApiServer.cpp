@@ -50,7 +50,8 @@ namespace
 {
 using StatusCode = QHttpServerResponse::StatusCode;
 
-QHttpServerResponse jsonError(const QString& message, const StatusCode status)
+[[maybe_unused]] QHttpServerResponse jsonError(
+  const QString& message, const StatusCode status)
 {
   return QHttpServerResponse{QJsonObject{{"error", message}}, status};
 }
@@ -68,19 +69,9 @@ QJsonObject boundsToJson(const vm::bbox3d& bounds)
   };
 }
 
-QHttpServerResponse handleGetDocument(AppController& appController)
+QJsonObject documentToJson(const MapDocument& document, const bool active)
 {
-  const auto windows = appController.mapWindowManager().mapWindows();
-  if (windows.empty())
-  {
-    return jsonError("no document is open", StatusCode::Conflict);
-  }
-  if (windows.size() > 1)
-  {
-    return jsonError("more than one document is open", StatusCode::Conflict);
-  }
-
-  const auto& map = windows.front()->document().map();
+  const auto& map = document.map();
   const auto& worldNode = map.worldNode();
 
   auto layers = QJsonArray{};
@@ -92,11 +83,13 @@ QHttpServerResponse handleGetDocument(AppController& appController)
     });
   }
 
-  const auto pathValue = map.persistent()
-                           ? QJsonValue{QString::fromStdString(map.path().generic_string())}
-                           : QJsonValue{QJsonValue::Null};
+  const auto pathValue =
+    map.persistent() ? QJsonValue{QString::fromStdString(map.path().generic_string())}
+                     : QJsonValue{QJsonValue::Null};
 
-  return QHttpServerResponse{QJsonObject{
+  return QJsonObject{
+    {"handle", static_cast<qint64>(document.id())},
+    {"active", active},
     {"name", QString::fromStdString(map.path().filename().generic_string())},
     {"path", pathValue},
     {"mapFormat", QString::fromStdString(mdl::formatName(worldNode.mapFormat()))},
@@ -104,7 +97,21 @@ QHttpServerResponse handleGetDocument(AppController& appController)
     {"modified", map.modified()},
     {"layers", layers},
     {"nodeCount", static_cast<qint64>(worldNode.familySize())},
-  }};
+  };
+}
+
+QHttpServerResponse handleGetDocuments(AppController& appController)
+{
+  // mapWindows() is focus-ordered, so the front window is the active document.
+  const auto windows = appController.mapWindowManager().mapWindows();
+  auto documents = QJsonArray{};
+  auto active = true;
+  for (auto* window : windows)
+  {
+    documents.append(documentToJson(window->document(), active));
+    active = false;
+  }
+  return QHttpServerResponse{documents};
 }
 
 } // namespace
@@ -152,8 +159,8 @@ quint16 ApiServer::port() const
 
 void ApiServer::registerRoutes()
 {
-  m_httpServer->route("/document", QHttpServerRequest::Method::Get, [this]() {
-    return handleGetDocument(m_appController);
+  m_httpServer->route("/documents", QHttpServerRequest::Method::Get, [this]() {
+    return handleGetDocuments(m_appController);
   });
 }
 

@@ -56,6 +56,8 @@
 #include <fmt/std.h>
 
 #include <algorithm>
+#include <atomic>
+#include <cstdint>
 #include <cstdlib>
 #include <string>
 #include <type_traits>
@@ -66,6 +68,12 @@ namespace tb::ui
 {
 
 const vm::bbox3d MapDocument::DefaultWorldBounds(-32768.0, 32768.0);
+
+std::uint64_t nextDocumentId()
+{
+  static auto counter = std::atomic<std::uint64_t>{1};
+  return counter.fetch_add(1, std::memory_order_relaxed);
+}
 
 MapDocument::MapDocument(
   kdl::task_manager& taskManager, gl::ResourceManager& resourceManager)
@@ -194,6 +202,11 @@ void MapDocument::updateMapFromPreferences()
   m_map->editorContext().setShowBrushes(pref(Preferences::ShowBrushes));
   m_map->editorContext().setAlignmentLock(pref(Preferences::AlignmentLock));
   m_map->editorContext().setUVLock(pref(Preferences::UVLock));
+}
+
+std::uint64_t MapDocument::id() const
+{
+  return m_id;
 }
 
 mdl::Map& MapDocument::map()

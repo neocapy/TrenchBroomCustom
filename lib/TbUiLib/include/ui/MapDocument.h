@@ -27,6 +27,7 @@
 #include "vm/bbox.h"
 #include "vm/polygon.h"
 
+#include <cstdint>
 #include <filesystem>
 #include <memory>
 #include <optional>
@@ -88,6 +89,12 @@ struct PortalFile
   std::vector<vm::polygon3f> portals;
   std::filesystem::path path;
 };
+
+/**
+ * Returns a process-unique handle for an open document, minted from a global atomic
+ * counter (starts at 1; 0 is reserved as a null handle).
+ */
+std::uint64_t nextDocumentId();
 
 class MapDocument
 {
@@ -152,6 +159,10 @@ public:
   Notifier<> portalFileWasUnloadedNotifier;
 
 private:
+  // Stable per-session handle, minted at construction. Survives reload because the
+  // MapDocument outlives the mdl::Map it wraps.
+  std::uint64_t m_id = nextDocumentId();
+
   // pointer so that MapDocument can be moveable
   kdl::task_manager* m_taskManager;
   gl::ResourceManager* m_resourceManager;
@@ -219,6 +230,9 @@ private:
   void updateMapFromPreferences();
 
 public: // accessors and such
+  /** Stable per-session handle for this open document; survives reload. */
+  std::uint64_t id() const;
+
   mdl::Map& map();
   const mdl::Map& map() const;
 
