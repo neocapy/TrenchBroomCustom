@@ -398,19 +398,22 @@ Expose it only if you want menu-command parity in addition to the data API.
 
 ## 13. API reference (v1)
 
-All routes are HTTP on `127.0.0.1:<port>` with JSON bodies. The API targets the
-single open document and returns 409 if zero or more than one is open. All
-mutation goes through one batch endpoint (`POST /edit`) that runs its whole array
-of ops as a single transaction; reads are individual routes. Routes with no input
-are GET; anything taking a body is POST.
+All routes are HTTP on `127.0.0.1:<port>` with JSON bodies. `GET /documents` lists
+every open document with its handle; every other route targets one document through
+a required `doc` handle — a `?doc=<handle>` query item on GET, a `"doc": <handle>`
+field in the POST body. Omitting `doc` is 409; an unknown handle is 404. All
+mutation goes through one batch endpoint (`POST /edit`) that runs its whole array of
+ops as a single transaction; reads are individual routes. Routes with no body are
+GET; anything taking a body is POST.
 
 ### Shared types
 
 ```
 Vec3    = [number, number, number]          // world units, x y z
 Bounds  = { min: Vec3, max: Vec3 }
-Handle  = number                            // uint64 node id; the counter starts low,
-                                            // so values stay within JS safe-integer range
+Handle  = number                            // uint64 id for a node or layer; documents
+                                            // have their own handles (see GET /documents).
+                                            // Counters start low, within JS safe-integer range
 Ref         = string                        // "@name": refers to an earlier op's result within one /edit batch
 HandleOrRef = Handle | Ref                  // a real handle (number), or a batch-local "@name" (string)
 FaceRef     = { brush: HandleOrRef, face: number }   // positional face index; brush is a real Handle in responses
@@ -455,45 +458,44 @@ Transform =                  // exactly one of:
   | { matrix: number[] }     // 16 numbers, row-major 4x4
 ```
 
-Errors: non-2xx with `{ error: string }`. 409 = wrong document count; 410 = a
-referenced handle is stale; 400 = malformed request; 422 = the operation ran but
-failed (reason in `error`).
+Errors: non-2xx with `{ error: string }`. 409 = required `doc` selector missing;
+404 = unknown `doc` handle; 410 = a referenced handle is stale; 400 = malformed
+request; 422 = the operation ran but failed (reason in `error`).
 
 ### Read routes
 
 ```
-GET  /document
-  -> { name: string, path: string|null, mapFormat: string, worldBounds: Bounds,
-       modified: boolean, layers: { handle: Handle, name: string }[],
-       nodeCount: number }
+GET  /documents                              // [built] every open document
+  -> Document[]   // { handle, active, name, path|null, mapFormat, worldBounds: Bounds,
+                  //   modified, layers: { handle, name }[], nodeCount }
 
-GET  /nodes?type=<NodeType>                  // type optional; lightweight enumeration
+GET  /nodes?doc=<handle>&type=<NodeType>     // [built] type optional; whole-tree enumeration
   -> { nodes: { handle: Handle, type: NodeType }[] }
 
-POST /nodes/get
-  req { handles: Handle[], detail?: "summary" | "full" }     // default "summary"
+POST /nodes/get                              // [built]
+  req { doc: Handle, handles: Handle[], detail?: "summary" | "full" }   // default "summary"
   -> { nodes: (NodeSummary | NodeDetail)[], missing: Handle[] }   // stale handles in `missing`
 
-GET  /selection
+GET  /selection?doc=<handle>                 // [built]
   -> { nodes: Handle[], faces: FaceRef[] }
 
-POST /handles/validate
-  req { handles: Handle[] }
+POST /handles/validate                       // [built]
+  req { doc: Handle, handles: Handle[] }
   -> { valid: Handle[], invalid: Handle[] }
 
-GET  /materials
+GET  /materials?doc=<handle>
   -> { collections: { name: string, materials: string[] }[] }
 
-GET  /entityclasses
+GET  /entityclasses?doc=<handle>
   -> { classes: { classname: string, type: "point" | "brush", bounds?: Bounds }[] }
 
 POST /raycast
-  req { rays: { origin: Vec3, direction: Vec3, maxDistance?: number,
+  req { doc: Handle, rays: { origin: Vec3, direction: Vec3, maxDistance?: number,
                 ignore?: Handle[] }[] }
   -> { results: RayHit[] }                  // one per ray, same order
 
 POST /contains
-  req { points: Vec3[] }
+  req { doc: Handle, points: Vec3[] }
   -> { results: { point: Vec3, handles: Handle[] }[] }   // nodes containing each point
 ```
 
@@ -618,8 +620,9 @@ Notes:
 
 ## Implementation status
 
-Built and verified: the node-identity milestone (section 7) and the server scaffold
-(sections 10-11) with one read route. The rest is still design only.
+Built and verified: node identity (section 7), document identity, the server
+(sections 10-11), and the document and scene-graph read routes (section 13).
+Mutation and the spatial/palette reads are still design only.
 
 - `mdl::Node` carries a `std::uint64_t` id minted on construction from a
   process-global atomic (`mdl::nextNodeId()`; starts at 1, with 0 reserved as a
@@ -636,15 +639,23 @@ Built and verified: the node-identity milestone (section 7) and the server scaff
   the item is live.
 - Tests: `NodeTest.id` and `Map_findNodeById`. The full TbMdlLib suite passes
   (74170 assertions across 195 cases), and the whole app builds, links, and bundles.
+- Each open document carries a stable `std::uint64_t` handle (`ui::nextDocumentId()`,
+  its own atomic). It lives on `ui::MapDocument`, which outlives the `mdl::Map` it
+  wraps, so the handle survives reload while the map's node ids are reminted. The
+  Debug node-tree dump leads with it.
 - `ui::ApiServer` (a `QObject` owned by `AppController`) binds a `QHttpServer` to a
-  loopback-only `QTcpServer` on `127.0.0.1:28196` and serves `GET /document`, which
-  returns the open map's name, path, format, world bounds, modified flag, layer
-  handles, and node count as JSON. Built against `Qt6::HttpServer`; smoke-tested with
-  an offscreen run plus `curl` (409 `{"error":"no document is open"}` with no map,
-  200 with the document JSON when one is open).
+  loopback-only `QTcpServer` on `127.0.0.1:28196`, built against `Qt6::HttpServer`.
+  It serves `GET /documents` (every open document) and the per-document reads
+  `GET /nodes`, `POST /nodes/get`, `GET /selection`, and `POST /handles/validate`.
+  Every per-document route takes a required `doc` handle (query item on GET, body
+  field on POST); a shared resolver returns 409 if it is missing, 400 if malformed,
+  404 if it names no open document. Node serialization (summary / full) covers world,
+  layer, group, entity, brush, and patch. Smoke-tested offscreen with `curl` across
+  every error path plus `GET /documents`.
 
-Not started: the `/edit` batch executor (with `as` / `@ref` resolution and the
-per-op handlers), the remaining read routes, and `clipSelectedBrushes`.
+Not started: the spatial/palette reads (`GET /materials`, `GET /entityclasses`,
+`POST /raycast`, `POST /contains`), the `/edit` batch executor (with `as` / `@ref`
+resolution and the per-op handlers), and `clipSelectedBrushes`.
 
 ## Open questions and deferrals
 
